@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { ChatTimeline } from "@/components/dashboard/chat-timeline";
 import { ModeComposer } from "@/components/dashboard/mode-composer";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
 import type { ChatMessagePayload, DashboardMode, TimelineItem } from "@/lib/types";
 
 function uid(prefix: string) {
@@ -29,8 +34,14 @@ export default function Home() {
   const [firstFrameImage, setFirstFrameImage] = useState("");
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const scrollEndRef = useRef<HTMLDivElement>(null);
-  const prevItemsLengthRef = useRef(0);
+
+  const isStreamingChat = useMemo(
+    () =>
+      items.some(
+        (item) => item.type === "assistant" && item.isStreaming === true,
+      ),
+    [items],
+  );
 
   const activeVideoTasks = useMemo(
     () =>
@@ -79,22 +90,11 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [activeVideoTasks]);
 
-  useLayoutEffect(() => {
-    const el = scrollEndRef.current;
-    if (!el) return;
-    const lengthChanged = items.length !== prevItemsLengthRef.current;
-    prevItemsLengthRef.current = items.length;
-    el.scrollIntoView({
-      behavior: lengthChanged ? "smooth" : "auto",
-      block: "end",
-    });
-  }, [items]);
-
-  async function handleChat() {
+  async function handleChat(text: string) {
     const userMessage: TimelineItem = {
       id: uid("user"),
       type: "user",
-      text: prompt,
+      text,
       createdAt: Date.now(),
     };
     const assistantId = uid("assistant");
@@ -108,9 +108,7 @@ export default function Home() {
 
     const nextItems = [...items, userMessage, assistantMessage];
     setItems(nextItems);
-    setPrompt("");
 
-    // Exclude empty assistant placeholders (streaming slot) — API requires non-empty content.
     const messages: ChatMessagePayload[] = nextItems
       .filter(isTextTimelineItem)
       .filter((item) => item.text.trim().length > 0)
@@ -162,14 +160,12 @@ export default function Home() {
     );
   }
 
-  async function handleImage() {
-    const currentPrompt = prompt;
-    setPrompt("");
+  async function handleImage(text: string) {
     const response = await fetch("/api/image/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: currentPrompt,
+        prompt: text,
         model: "image-01",
         aspectRatio: "1:1",
       }),
@@ -193,25 +189,21 @@ export default function Home() {
       {
         id: uid("image"),
         type: "image",
-        prompt: currentPrompt,
+        prompt: text,
         urls: result.urls ?? [],
         createdAt: Date.now(),
       },
     ]);
   }
 
-  async function handleVideo() {
-    const currentPrompt = prompt;
+  async function handleVideo(text: string) {
     const currentFirstFrameImage = firstFrameImage;
-    setPrompt("");
-    setFirstFrameImage("");
 
     const response = await fetch("/api/video/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: currentFirstFrameImage ? "MiniMax-Hailuo-2.3-Fast" : "MiniMax-Hailuo-2.3",
-        prompt: currentPrompt,
+        prompt: text,
         firstFrameImage: currentFirstFrameImage || undefined,
         duration: 6,
         resolution: "768P",
@@ -236,7 +228,7 @@ export default function Home() {
       {
         id: uid("video"),
         type: "video",
-        prompt: currentPrompt,
+        prompt: text,
         taskId: result.taskId,
         status: "Preparing",
         createdAt: Date.now(),
@@ -244,17 +236,19 @@ export default function Home() {
     ]);
   }
 
-  async function handleSubmit() {
-    if (!prompt.trim()) return;
+  async function handleSubmit(text: string) {
+    if (!text.trim()) return;
 
+    setPrompt("");
     setIsSubmitting(true);
     try {
       if (mode === "chat") {
-        await handleChat();
+        await handleChat(text);
       } else if (mode === "image") {
-        await handleImage();
+        await handleImage(text);
       } else {
-        await handleVideo();
+        setFirstFrameImage("");
+        await handleVideo(text);
       }
     } finally {
       setIsSubmitting(false);
@@ -272,14 +266,12 @@ export default function Home() {
     <div className="flex h-dvh">
       <AppSidebar onNewChat={handleNewChat} />
       <main className="flex min-w-0 flex-1 flex-col">
-       
-
-        <div className="min-h-0 flex-1 overflow-auto">
-          <div className="mx-auto w-full max-w-4xl">
+        <Conversation className="min-h-0 flex-1">
+          <ConversationContent className="mx-auto w-full px-2 pt-4 pb-2">
             <ChatTimeline items={items} />
-            <div ref={scrollEndRef} aria-hidden className="h-px shrink-0" />
-          </div>
-        </div>
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
 
         <ModeComposer
           mode={mode}
@@ -289,6 +281,7 @@ export default function Home() {
           firstFrameImage={firstFrameImage}
           onFirstFrameImageChange={setFirstFrameImage}
           isSubmitting={isSubmitting}
+          isStreamingChat={isStreamingChat}
           canSubmit={Boolean(prompt.trim())}
           onSubmit={handleSubmit}
         />

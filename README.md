@@ -25,6 +25,10 @@ pnpm install
 
 ```bash
 MINIMAX_API_KEY=your_minimax_api_key
+
+# Optional: default video model (see MiniMax docs for your plan)
+# Token Plan often does not include Hailuo 2.3; the app defaults to MiniMax-Hailuo-02.
+# MINIMAX_VIDEO_MODEL=MiniMax-Hailuo-02
 ```
 
 3. Start dev server:
@@ -57,7 +61,7 @@ pnpm dev
 
 - Chat: `MiniMax-M2.7`
 - Image: `image-01`
-- Video: `MiniMax-Hailuo-2.3` (text-to-video), `MiniMax-Hailuo-2.3-Fast` (i2v)
+- Video: `MiniMax-Hailuo-02` by default (text-to-video and image-to-video), overridable with `MINIMAX_VIDEO_MODEL`. Some plans reject Hailuo 2.3 SKUs (e.g. `MiniMax-Hailuo-2.3-6s-768p` with API error `2061`).
 
 ## Notes and Limits
 
