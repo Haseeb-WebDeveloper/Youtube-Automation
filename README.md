@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MiniMax Claude-Like Dashboard
 
-## Getting Started
+Unified dashboard for MiniMax:
+- Chat (streaming text)
+- Image generation
+- Video generation (async task + polling)
+- Settings page with server-side API key status
 
-First, run the development server:
+## Tech Stack
+
+- Next.js 16 App Router
+- React 19 + TypeScript
+- AI SDK v6 (`ai`) + OpenAI-compatible provider (`@ai-sdk/openai-compatible`)
+- Tailwind + shadcn/ui components
+
+## Setup
+
+1. Install dependencies:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Create `.env.local` in project root:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+MINIMAX_API_KEY=your_minimax_api_key
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+3. Start dev server:
 
-## Learn More
+```bash
+pnpm dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+4. Open [http://localhost:3000](http://localhost:3000)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Routes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### App Pages
+- `/` dashboard UI
+- `/settings` key status + model defaults
 
-## Deploy on Vercel
+### API Endpoints
+- `POST /api/chat/stream`
+  - Streams chat text response from MiniMax (`MiniMax-M2.7` by default)
+- `POST /api/image/generate`
+  - Generates images via MiniMax image API
+- `POST /api/video/create`
+  - Creates async video generation task
+- `GET /api/video/status?taskId=...`
+  - Polls task status and resolves downloadable URL when complete
+- `GET /api/settings/status`
+  - Returns `{ configured: boolean }`
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Default Models
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Chat: `MiniMax-M2.7`
+- Image: `image-01`
+- Video: `MiniMax-Hailuo-2.3` (text-to-video), `MiniMax-Hailuo-2.3-Fast` (i2v)
+
+## Notes and Limits
+
+- Video generation is asynchronous. The dashboard polls task status every few seconds.
+- Image URL responses from MiniMax can expire (provider-side behavior).
+- Rate limits and pricing depend on your MiniMax account tier and model.
+- API key is server-side only (`process.env.MINIMAX_API_KEY`), not stored in browser.
+
+## Scripts
+
+```bash
+pnpm dev
+pnpm lint
+pnpm build
+pnpm start
+```

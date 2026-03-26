@@ -1,64 +1,297 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+
+import { AppSidebar } from "@/components/dashboard/app-sidebar";
+import { ChatTimeline } from "@/components/dashboard/chat-timeline";
+import { ModeComposer } from "@/components/dashboard/mode-composer";
+import type { ChatMessagePayload, DashboardMode, TimelineItem } from "@/lib/types";
+
+function uid(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isVideoTimelineItem(
+  item: TimelineItem,
+): item is Extract<TimelineItem, { type: "video" }> {
+  return item.type === "video";
+}
+
+function isTextTimelineItem(
+  item: TimelineItem,
+): item is Extract<TimelineItem, { type: "user" | "assistant" }> {
+  return item.type === "user" || item.type === "assistant";
+}
 
 export default function Home() {
+  const [mode, setMode] = useState<DashboardMode>("chat");
+  const [prompt, setPrompt] = useState("");
+  const [firstFrameImage, setFirstFrameImage] = useState("");
+  const [items, setItems] = useState<TimelineItem[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const scrollEndRef = useRef<HTMLDivElement>(null);
+  const prevItemsLengthRef = useRef(0);
+
+  const activeVideoTasks = useMemo(
+    () =>
+      items
+        .filter(isVideoTimelineItem)
+        .filter((item) => item.status !== "Success" && item.status !== "Fail"),
+    [items],
+  );
+
+  useEffect(() => {
+    if (activeVideoTasks.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const task of activeVideoTasks) {
+        const response = await fetch(
+          `/api/video/status?taskId=${encodeURIComponent(task.taskId)}`,
+          { method: "GET" },
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          setItems((previous) =>
+            previous.map((item) =>
+              item.type === "video" && item.taskId === task.taskId
+                ? { ...item, status: "Fail", error: result.error ?? "Video failed" }
+                : item,
+            ),
+          );
+          continue;
+        }
+
+        setItems((previous) =>
+          previous.map((item) =>
+            item.type === "video" && item.taskId === task.taskId
+              ? {
+                  ...item,
+                  status: result.status,
+                  fileId: result.fileId,
+                  downloadUrl: result.downloadUrl,
+                }
+              : item,
+          ),
+        );
+      }
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [activeVideoTasks]);
+
+  useLayoutEffect(() => {
+    const el = scrollEndRef.current;
+    if (!el) return;
+    const lengthChanged = items.length !== prevItemsLengthRef.current;
+    prevItemsLengthRef.current = items.length;
+    el.scrollIntoView({
+      behavior: lengthChanged ? "smooth" : "auto",
+      block: "end",
+    });
+  }, [items]);
+
+  async function handleChat() {
+    const userMessage: TimelineItem = {
+      id: uid("user"),
+      type: "user",
+      text: prompt,
+      createdAt: Date.now(),
+    };
+    const assistantId = uid("assistant");
+    const assistantMessage: TimelineItem = {
+      id: assistantId,
+      type: "assistant",
+      text: "",
+      isStreaming: true,
+      createdAt: Date.now(),
+    };
+
+    const nextItems = [...items, userMessage, assistantMessage];
+    setItems(nextItems);
+    setPrompt("");
+
+    // Exclude empty assistant placeholders (streaming slot) — API requires non-empty content.
+    const messages: ChatMessagePayload[] = nextItems
+      .filter(isTextTimelineItem)
+      .filter((item) => item.text.trim().length > 0)
+      .map((item) => ({
+        role: item.type === "user" ? "user" : "assistant",
+        content: item.text,
+      }));
+
+    const response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+
+    if (!response.ok || !response.body) {
+      const err = await response.json().catch(() => ({}));
+      setItems((previous) =>
+        previous.map((item) =>
+          item.id === assistantId
+            ? {
+                ...item,
+                text: err.error ?? "Chat stream failed.",
+                isStreaming: false,
+              }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      fullText += decoder.decode(value, { stream: true });
+      setItems((previous) =>
+        previous.map((item) =>
+          item.id === assistantId ? { ...item, text: fullText } : item,
+        ),
+      );
+    }
+
+    setItems((previous) =>
+      previous.map((item) =>
+        item.id === assistantId ? { ...item, isStreaming: false } : item,
+      ),
+    );
+  }
+
+  async function handleImage() {
+    const currentPrompt = prompt;
+    setPrompt("");
+    const response = await fetch("/api/image/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: currentPrompt,
+        model: "image-01",
+        aspectRatio: "1:1",
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      setItems((previous) => [
+        ...previous,
+        {
+          id: uid("assistant"),
+          type: "assistant",
+          text: result.error ?? "Image generation failed.",
+          createdAt: Date.now(),
+        },
+      ]);
+      return;
+    }
+
+    setItems((previous) => [
+      ...previous,
+      {
+        id: uid("image"),
+        type: "image",
+        prompt: currentPrompt,
+        urls: result.urls ?? [],
+        createdAt: Date.now(),
+      },
+    ]);
+  }
+
+  async function handleVideo() {
+    const currentPrompt = prompt;
+    const currentFirstFrameImage = firstFrameImage;
+    setPrompt("");
+    setFirstFrameImage("");
+
+    const response = await fetch("/api/video/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: currentFirstFrameImage ? "MiniMax-Hailuo-2.3-Fast" : "MiniMax-Hailuo-2.3",
+        prompt: currentPrompt,
+        firstFrameImage: currentFirstFrameImage || undefined,
+        duration: 6,
+        resolution: "768P",
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      setItems((previous) => [
+        ...previous,
+        {
+          id: uid("assistant"),
+          type: "assistant",
+          text: result.error ?? "Video generation failed.",
+          createdAt: Date.now(),
+        },
+      ]);
+      return;
+    }
+
+    setItems((previous) => [
+      ...previous,
+      {
+        id: uid("video"),
+        type: "video",
+        prompt: currentPrompt,
+        taskId: result.taskId,
+        status: "Preparing",
+        createdAt: Date.now(),
+      },
+    ]);
+  }
+
+  async function handleSubmit() {
+    if (!prompt.trim()) return;
+
+    setIsSubmitting(true);
+    try {
+      if (mode === "chat") {
+        await handleChat();
+      } else if (mode === "image") {
+        await handleImage();
+      } else {
+        await handleVideo();
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function handleNewChat() {
+    setItems([]);
+    setPrompt("");
+    setFirstFrameImage("");
+    setMode("chat");
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="flex h-dvh">
+      <AppSidebar onNewChat={handleNewChat} />
+      <main className="flex min-w-0 flex-1 flex-col">
+       
+
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto w-full max-w-4xl">
+            <ChatTimeline items={items} />
+            <div ref={scrollEndRef} aria-hidden className="h-px shrink-0" />
+          </div>
+        </div>
+
+        <ModeComposer
+          mode={mode}
+          onModeChange={setMode}
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          firstFrameImage={firstFrameImage}
+          onFirstFrameImageChange={setFirstFrameImage}
+          isSubmitting={isSubmitting}
+          canSubmit={Boolean(prompt.trim())}
+          onSubmit={handleSubmit}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
       </main>
     </div>
   );
